@@ -36,7 +36,7 @@ namespace PluginsApp
         }
 
         Dictionary<string, PluginAssemblyLoadContext> plugins = new Dictionary<string, PluginAssemblyLoadContext>();
-        Dictionary<string, IEnumerable<IPlugin>> pluginComs = new Dictionary<string, IEnumerable<IPlugin>>();
+        Dictionary<string, IEnumerable<WeakReference>> pluginComs = new Dictionary<string, IEnumerable<WeakReference>>();
 
         private void btnLoad_Click(object sender, EventArgs e)
         {
@@ -53,7 +53,17 @@ namespace PluginsApp
             {
                 loadContext.Unload();
                 plugins.Remove(key);
-                pluginComs.Remove(key);
+                if (pluginComs.TryGetValue(key, out var tmpList))
+                {
+                    pluginComs.Remove(key);
+                    int maxCount = 10;
+                    while (tmpList.Any(item => item.IsAlive) && --maxCount > 0)
+                    {
+                        GC.Collect();
+                        GC.WaitForPendingFinalizers();
+                    }
+                }
+
             }
             else
             {
@@ -66,32 +76,35 @@ namespace PluginsApp
             string result = string.Empty;
             string key = lstboxPlugins.Text;
             PluginInfo pinfo = lstboxPlugins.SelectedItem as PluginInfo;
-            if (pluginComs.TryGetValue(key, out IEnumerable<IPlugin> pList))
+            if (pluginComs.TryGetValue(key, out IEnumerable<WeakReference> pList))
             {
                 foreach (var plugin in pList)
                 {
-                    result = plugin.Execute(pinfo.inPars);
+                    if (plugin.IsAlive && plugin.Target is IPlugin)
+                    {
+                        result = (plugin.Target as IPlugin)?.Execute(pinfo.inPars);
+                    }
                 }
             }
-            else
-            {
-                string root = Path.GetFullPath(Path.Combine(
-                    Path.GetDirectoryName(
-                        Path.GetDirectoryName(
-                            Path.GetDirectoryName(
-                                Path.GetDirectoryName(
-                                    Path.GetDirectoryName(typeof(Program).Assembly.Location)))))));
+            //else
+            //{
+            //    string root = Path.GetFullPath(Path.Combine(
+            //        Path.GetDirectoryName(
+            //            Path.GetDirectoryName(
+            //                Path.GetDirectoryName(
+            //                    Path.GetDirectoryName(
+            //                        Path.GetDirectoryName(typeof(Program).Assembly.Location)))))));
 
-                string pluginLocation = Path.GetFullPath(Path.Combine(root, pinfo.Path.Replace('\\', Path.DirectorySeparatorChar)));
-                WeakReference hostAlcWeakRef;
-                result = ExecuteAndUnload(pluginLocation, pinfo.inPars, out hostAlcWeakRef);
-                //检查
-                for (int i = 0; hostAlcWeakRef.IsAlive && (i < 10); i++)
-                {
-                    GC.Collect();
-                    GC.WaitForPendingFinalizers();
-                }
-            }
+            //    string pluginLocation = Path.GetFullPath(Path.Combine(root, pinfo.Path.Replace('\\', Path.DirectorySeparatorChar)));
+            //    WeakReference hostAlcWeakRef;
+            //    result = ExecuteAndUnload(pluginLocation, pinfo.inPars, out hostAlcWeakRef);
+            //    //检查
+            //    for (int i = 0; hostAlcWeakRef.IsAlive && (i < 10); i++)
+            //    {
+            //        GC.Collect();
+            //        GC.WaitForPendingFinalizers();
+            //    }
+            //}
             txtOut.AppendText($"{DateTime.Now} 执行完成-{result} \r\n");
         }
 
@@ -138,11 +151,15 @@ namespace PluginsApp
                 loadContext = new PluginAssemblyLoadContext(pluginLocation);
                 plugins[key] = loadContext;
             }
+            var typeDescriptorAssemblyPath = typeof(TypeDescriptor).Assembly.Location;
+            loadContext.LoadFromAssemblyPath(typeDescriptorAssemblyPath);
+            var netstandardShimAssemblyPath = Path.Combine(Path.GetDirectoryName(typeDescriptorAssemblyPath), "netstandard.dll");
+            loadContext.LoadFromAssemblyPath(netstandardShimAssemblyPath);
             return loadContext.LoadFromAssemblyName(new AssemblyName(Path.GetFileNameWithoutExtension(pluginLocation)));
         }
 
         [MethodImpl(MethodImplOptions.NoInlining)]
-        static IEnumerable<IPlugin> CreatePlugins(Assembly assembly)
+        static IEnumerable<WeakReference> CreatePlugins(Assembly assembly)
         {
             int count = 0;
 
@@ -154,7 +171,7 @@ namespace PluginsApp
                     if (result != null)
                     {
                         count++;
-                        yield return result;
+                        yield return new WeakReference(result);
                     }
                 }
             }
